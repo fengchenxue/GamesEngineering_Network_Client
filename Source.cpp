@@ -2,6 +2,7 @@
 #include<WS2tcpip.h>
 #include<shlwapi.h>
 #include "imgui.h"
+#include"imgui_stdlib.h"
 #include "imgui_impl_win32.h"
 #include "imgui_impl_dx11.h"
 #include <d3d11.h>
@@ -44,11 +45,12 @@ static std::atomic<bool>network_running = true;
 //-----chat data-------------------
 //(1) public chat
 static std::string mainChainInput;
-static std::vector<std::string> mainChatHistory = { "user1: Hi.","user2: Hello." };
+static std::vector<std::string> mainChatHistory;
 //(2) private chat and users information 
 //Different computers generate different ID to distinguish users.  
 static std::string myID;
 static std::string myNickname;
+static std::string tempNickname;
 struct userInfo {
     std::string nickname;
     bool isOnline = true;
@@ -64,18 +66,17 @@ void receiveMessages();
 void startReceiveThread();
 std::string GenerateUUID();
 void loadOrCreateUUID();
-
+void saveUUID();
 
 
 // Main code
-int main(int, char**)
+int main()
 {
-	//----------------network----------------
-	//winsock
-	WSADATA wsaData;
-	addrinfo* result = NULL,* ptr = NULL,hints;
+    // (1) generate or load UUID
+	loadOrCreateUUID();
 
-	// Initialize winsock
+    // (2)Initialize winsock
+	WSADATA wsaData;
 	int iResult;
 	iResult = WSAStartup(MAKEWORD(2, 2), &wsaData);
 	if (iResult != 0)
@@ -84,7 +85,8 @@ int main(int, char**)
 		return 1;
 	}
 
-	//addrinfo
+	//(3) get addrinfo
+    addrinfo* result = NULL, hints;
 	ZeroMemory(&hints, sizeof(hints));
 	hints.ai_family = AF_INET;
 	hints.ai_socktype = SOCK_STREAM;
@@ -97,7 +99,7 @@ int main(int, char**)
 		return 1;
 	}
 
-	//create socket
+	//(4) create socket
 	connectSocket = socket(result->ai_family, result->ai_socktype, result->ai_protocol);
     if (connectSocket == INVALID_SOCKET)
     {
@@ -107,7 +109,7 @@ int main(int, char**)
 		return 1;
     }
 
-	// Connect to server.
+	//(5) Connect to server.
 	iResult = connect(connectSocket, result->ai_addr, (int)result->ai_addrlen);
 	if (iResult == SOCKET_ERROR)
 	{
@@ -118,12 +120,17 @@ int main(int, char**)
 	}
 	freeaddrinfo(result);
 
-	std::thread receiveThread(receiveMessages);
+	//(6)send ID to server
+    {
+        std::string handshakeMsg = "ID:" + myID + "\n";
+		send(connectSocket, handshakeMsg.c_str(), handshakeMsg.size(), 0);
+    }
 
+	//(7)start a thread to receive messages
+	startReceiveThread();
 
-    //------------imgui------------
+	//(8) Initialize Direct3D and win32
     // Create application window
-    //ImGui_ImplWin32_EnableDpiAwareness();
     WNDCLASSEXW wc = { sizeof(wc), CS_CLASSDC, WndProc, 0L, 0L, GetModuleHandle(nullptr), nullptr, nullptr, nullptr, nullptr, L"ImGui", nullptr };
     ::RegisterClassExW(&wc);
     HWND hwnd = ::CreateWindowW(wc.lpszClassName, L"Chat Room", WS_OVERLAPPEDWINDOW, 100, 100, 1280, 800, nullptr, nullptr, wc.hInstance, nullptr);
@@ -140,6 +147,7 @@ int main(int, char**)
     ::ShowWindow(hwnd, SW_SHOWDEFAULT);
     ::UpdateWindow(hwnd);
 
+    //(9)Initial imgui
     // Setup Dear ImGui context
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
@@ -148,23 +156,19 @@ int main(int, char**)
     // Setup Dear ImGui style
     ImGui::StyleColorsDark();
     //ImGui::StyleColorsLight();
+    ImVec4 clear_color = ImVec4(0.45f, 0.55f, 0.60f, 1.00f);
+    float inputAreaHeight = 40.0f;
+    ImGui::SetNextWindowSize(ImVec2(800, 600), ImGuiCond_FirstUseEver);
 
     // Setup Platform/Renderer backends
     ImGui_ImplWin32_Init(hwnd);
     ImGui_ImplDX11_Init(g_pd3dDevice, g_pd3dDeviceContext);
 
-    //Our state
-    bool show_demo_window = true;
-    bool show_another_window = false;
-    ImVec4 clear_color = ImVec4(0.45f, 0.55f, 0.60f, 1.00f);
-
-    loadOrCreateUUID();
-    // Main loop
+    //(10) Main loop
     bool done = false;
     while (!done)
     {
         // Poll and handle messages (inputs, window resize, etc.)
-        // See the WndProc() function below for our to dispatch events to the Win32 backend.
         MSG msg;
         while (::PeekMessage(&msg, nullptr, 0U, 0U, PM_REMOVE))
         {
@@ -198,50 +202,133 @@ int main(int, char**)
         ImGui_ImplWin32_NewFrame();
         ImGui::NewFrame();
 
-
-        // 1. Show the big demo window (Most of the sample code is in ImGui::ShowDemoWindow()! You can browse its code to learn more about Dear ImGui!).
-        if (show_demo_window)
-            ImGui::ShowDemoWindow(&show_demo_window);
-
-        // 2. Show a simple window that we create ourselves. We use a Begin/End pair to create a named window.
+		//-------main chat window-------
+        ImGui::Begin("Chat Room"); 
         {
-            static float f = 0.0f;
-            static int counter = 0;
+			//------local user information--------
+			ImGui::Text("Your UUID : %s", myID.c_str());
+			ImGui::Text("Your nickname:");
+			ImGui::SameLine();
+			ImGui::InputText("##nickname", &tempNickname);
 
-            ImGui::Begin("Hello, world!");                          // Create a window called "Hello, world!" and append into it.
+			if (ImGui::Button("Update Nickname"))
+			{
+				std::string sendMsg = "NICK:" + tempNickname + "\n";
+				send(connectSocket, sendMsg.c_str(), sendMsg.size(), 0);
+				//save the nickname
+                myNickname = tempNickname;
+				saveUUID();
+			}
+			ImGui::SameLine();
+            if (ImGui::Button("Reset")) {
+				tempNickname = myNickname;
+            }
+			ImGui::Separator();
+            
+          
+			//------users list on the left-------
+			ImGui::BeginChild("Users", ImVec2(150, 0), true);
+			ImGui::Text("Users List");
+            ImGui::Separator();
+            for (auto& user : Users)
+			{
+                ImGui::PushStyleColor(ImGuiCol_Text,
+                    user.second.isOnline ?
+                    ImVec4(0.4f, 1.0f, 0.4f, 1.0f) :  // online color
+                    ImVec4(0.6f, 0.6f, 0.6f, 1.0f));  // offline color
+				if (ImGui::Selectable(user.second.nickname.c_str()))
+				{
+					user.second.private_isOpen = true;
+				}
+                ImGui::PopStyleColor();
 
-            ImGui::Text("This is some useful text.");               // Display some text (you can use a format strings too)
-            ImGui::Checkbox("Demo Window", &show_demo_window);      // Edit bools storing our window open/close state
-            ImGui::Checkbox("Another Window", &show_another_window);
+            }
+			ImGui::EndChild();
+			ImGui::SameLine();
 
-            ImGui::SliderFloat("float", &f, 0.0f, 1.0f);            // Edit 1 float using a slider from 0.0f to 1.0f
-            ImGui::ColorEdit3("clear color", (float*)&clear_color); // Edit 3 floats representing a color
+			//------main chat on the right-------
 
-            if (ImGui::Button("Button"))                            // Buttons return true when clicked (most widgets return true when edited/activated)
-                counter++;
-            ImGui::SameLine();
-            ImGui::Text("counter = %d", counter);
+			ImGui::BeginChild("public Chat",ImVec2(0,0),true, ImGuiWindowFlags_NoScrollbar);
+            {
+                float msgHeight = ImGui::GetWindowHeight() - inputAreaHeight-30;
+                ImGui::BeginChild("Chat Messages", ImVec2(0, msgHeight), true, ImGuiWindowFlags_HorizontalScrollbar| ImGuiWindowFlags_AlwaysVerticalScrollbar);
+                {
+                    for (auto& msg : mainChatHistory) {
+                        ImGui::TextWrapped(msg.c_str());
+                    }
+                    if (ImGui::GetScrollY() >= ImGui::GetScrollMaxY() - 5) {
+                        ImGui::SetScrollHereY(1.0f);
+                    }
+                }
+			    ImGui::EndChild();
+			    ImGui::Separator();
+			    //-----------------input area-----------------
+			    ImGui::BeginChild("Input Area", ImVec2(0, inputAreaHeight), false);
+                {
+                    //ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 5);
+                    ImGui::Text("Message:");
+                    ImGui::SameLine();
 
-            ImGui::Text("Application average %.3f ms/frame (%.1f FPS)", 1000.0f / io.Framerate, io.Framerate);
-            ImGui::End();
+                    ImGui::InputText("##mainChatInput", &mainChainInput);
+                    ImGui::SameLine();
+                    if (ImGui::Button("Send")) {
+                        if (!mainChainInput.empty())
+                        {
+                            std::string msg = myNickname + ": " + mainChainInput + "\n";
+                            send(connectSocket, msg.c_str(), msg.size(), 0);
+                            mainChatHistory.push_back(msg);
+                            mainChainInput.clear();
+                        }
+                    }
+                }
+			    ImGui::EndChild();
+            }
+            ImGui::EndChild();
         }
+		ImGui::End();
 
-        // 3. Show another simple window.
-        if (show_another_window)
-        {
-            ImGui::Begin("Another Window", &show_another_window);   // Pass a pointer to our bool variable (the window will have a closing button that will clear the bool when clicked)
-            ImGui::Text("Hello from another window!");
-            if (ImGui::Button("Close Me"))
-                show_another_window = false;
-            ImGui::End();
-        }
 
-        // Rendering
-        ImGui::Render();
-        const float clear_color_with_alpha[4] = { clear_color.x * clear_color.w, clear_color.y * clear_color.w, clear_color.z * clear_color.w, clear_color.w };
-        g_pd3dDeviceContext->OMSetRenderTargets(1, &g_mainRenderTargetView, nullptr);
-        g_pd3dDeviceContext->ClearRenderTargetView(g_mainRenderTargetView, clear_color_with_alpha);
-        ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
+		//-------private chat window-------
+		for (auto& user : Users)
+		{
+			if (user.second.private_isOpen)
+			{
+				std::string title = "Private Chat with " + user.second.nickname;
+				//chat history
+                ImGui::Begin(title.c_str(),&user.second.private_isOpen);
+                for (auto& msg : user.second.private_chatHistory)
+                {
+                    ImGui::TextWrapped(msg.c_str());
+                }
+				ImGui::Separator();
+				
+                //input box
+				ImGui::Text("Private Message:");
+				ImGui::SameLine();
+				ImGui::PushItemWidth(300);
+				ImGui::InputText("##privateChatInput", &user.second.private_inputBuffer);
+				ImGui::PopItemWidth();
+				ImGui::SameLine();
+				if (ImGui::Button("Send"))
+				{
+					if (!user.second.private_inputBuffer.empty())
+					{
+						std::string msg = myNickname + ": " + user.second.private_inputBuffer + "\n";
+						send(connectSocket, msg.c_str(), msg.size(), 0);
+						user.second.private_chatHistory.push_back(msg);
+						user.second.private_inputBuffer.clear();
+					}
+				}
+				ImGui::End();
+			}
+		}
+
+		// Rendering
+		ImGui::Render();
+		const float clear_color_with_alpha[4] = { clear_color.x * clear_color.w, clear_color.y * clear_color.w, clear_color.z * clear_color.w, clear_color.w };
+		g_pd3dDeviceContext->OMSetRenderTargets(1, &g_mainRenderTargetView, nullptr);
+		g_pd3dDeviceContext->ClearRenderTargetView(g_mainRenderTargetView, clear_color_with_alpha);
+		ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
 
         // Present
         HRESULT hr = g_pSwapChain->Present(1, 0);   // Present with vsync
@@ -410,17 +497,54 @@ void loadOrCreateUUID()
         std::ifstream idFile(idFilePath);
 		if (idFile.is_open())
 		{
-			idFile >> myID;
+            std::string idLine, nicknameLine;
+            if (std::getline(idFile, idLine)) {
+                if (!idLine.empty()) {
+					myID = idLine;
+                }
+            }
+            if (std::getline(idFile, nicknameLine)) {
+                if (!nicknameLine.empty())
+                {
+                    myNickname = nicknameLine;
+                    tempNickname = myNickname;
+                }
+            }
 			idFile.close();
 		}
 		else
 		{
 			myID = GenerateUUID();
+			std::string last4 = myID.substr(myID.size() - 4);
+			myNickname = "User" + last4;
+            tempNickname = myNickname;
+
 			std::ofstream idFile(idFilePath);
-			idFile << myID;
-			idFile.close();
+			if (idFile.is_open())
+			{
+				idFile << myID << "\n";
+				idFile << myNickname << "\n";
+				idFile.close();
+			}
 		}
 	}
+}
 
+void saveUUID()
+{
+    char exePath[MAX_PATH];
+    ::GetModuleFileNameA(NULL, exePath, MAX_PATH);
+    ::PathRemoveFileSpecA(exePath);
 
+    char idFilePath[MAX_PATH];
+    ::PathCombineA(idFilePath, exePath, "id.txt");
+    {
+	    std::ofstream idFile(idFilePath);
+	    if (idFile.is_open())
+	    {
+		    idFile << myID << "\n";
+		    idFile << myNickname << "\n";
+		    idFile.close();
+	    }
+    }
 }

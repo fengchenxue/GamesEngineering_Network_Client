@@ -39,6 +39,9 @@
     <ClCompile Include="imgui_draw.cpp">
       <Filter>Resource Files</Filter>
     </ClCompile>
+    <ClCompile Include="imgui_stdlib.cpp">
+      <Filter>Resource Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="imgui.h">
@@ -63,6 +66,9 @@
       <Filter>Resource Files</Filter>
     </ClInclude>
     <ClInclude Include="imstb_truetype.h">
+      <Filter>Resource Files</Filter>
+    </ClInclude>
+    <ClInclude Include="imgui_stdlib.h">
       <Filter>Resource Files</Filter>
     </ClInclude>
   </ItemGroup>
