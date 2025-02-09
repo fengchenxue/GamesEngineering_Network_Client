@@ -71,5 +71,29 @@
     <ClInclude Include="imgui_stdlib.h">
       <Filter>Resource Files</Filter>
     </ClInclude>
+    <ClInclude Include="fmod.h">
+      <Filter>Resource Files</Filter>
+    </ClInclude>
+    <ClInclude Include="fmod.hpp">
+      <Filter>Resource Files</Filter>
+    </ClInclude>
+    <ClInclude Include="fmod_common.h">
+      <Filter>Resource Files</Filter>
+    </ClInclude>
+    <ClInclude Include="fmod_codec.h">
+      <Filter>Resource Files</Filter>
+    </ClInclude>
+    <ClInclude Include="fmod_dsp.h">
+      <Filter>Resource Files</Filter>
+    </ClInclude>
+    <ClInclude Include="fmod_dsp_effects.h">
+      <Filter>Resource Files</Filter>
+    </ClInclude>
+    <ClInclude Include="fmod_errors.h">
+      <Filter>Resource Files</Filter>
+    </ClInclude>
+    <ClInclude Include="fmod_output.h">
+      <Filter>Resource Files</Filter>
+    </ClInclude>
   </ItemGroup>
 </Project>

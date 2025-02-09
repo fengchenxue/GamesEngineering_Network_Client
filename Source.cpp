@@ -15,8 +15,10 @@
 #include<atomic>
 #include<fstream>
 #include<random>
+#include"fmod.hpp"
 #pragma comment(lib, "ws2_32.lib")
 #pragma comment(lib,"shlwapi.lib")
+#pragma comment(lib,"fmod_vc.lib")
 //---------imgui---------
 // Data
 static ID3D11Device* g_pd3dDevice = nullptr;
@@ -56,17 +58,28 @@ struct userInfo {
     std::string nickname;
     bool isOnline = true;
     bool private_isOpen = false;
+	bool isUnread = false;
     std::vector<std::string> private_chatHistory;
     std::string private_inputBuffer;
 };
 static std::unordered_map<std::string, userInfo>Users;
 
-//-----functions for network-----
+//functions for network
 void receiveMessages();
 void heartbeat();
 std::string GenerateUUID();
 void loadOrCreateUUID();
 void saveUUID();
+
+//-----fmod audio system-----
+static FMOD::System* audioSystem = nullptr;
+static FMOD::Sound* publicSound = nullptr;
+static FMOD::Sound* privateSound = nullptr;
+
+//functions for audio
+bool initAudio();
+void cleanUpAudio();
+
 
 
 // Main code
@@ -167,7 +180,12 @@ int main()
     ImGui_ImplWin32_Init(hwnd);
     ImGui_ImplDX11_Init(g_pd3dDevice, g_pd3dDeviceContext);
 
-    //(10) Main loop
+	//(10) init audio system
+	if (!initAudio())
+	{
+		std::cout << "Failed to initialize audio system!" << std::endl;
+	}
+    //(11) Main loop
     bool done = false;
     while (!done)
     {
@@ -199,6 +217,9 @@ int main()
             g_ResizeWidth = g_ResizeHeight = 0;
             CreateRenderTarget();
         }
+
+        //update FMOD
+        if(audioSystem) audioSystem->update();
 
         // Start the Dear ImGui frame
         ImGui_ImplDX11_NewFrame();
@@ -239,9 +260,16 @@ int main()
                     user.second.isOnline ?
                     ImVec4(0.4f, 1.0f, 0.4f, 1.0f) :  // online color
                     ImVec4(0.6f, 0.6f, 0.6f, 1.0f));  // offline color
+
+				std::string displayName = user.second.nickname;
+				if (user.second.isUnread)
+				{
+					displayName += " (New)";
+				}
 				if (ImGui::Selectable(user.second.nickname.c_str()))
 				{
 					user.second.private_isOpen = true;
+					user.second.isUnread = false;
 				}
                 ImGui::PopStyleColor();
 
@@ -347,6 +375,8 @@ int main()
     }
 
     // Cleanup
+	cleanUpAudio();
+
 	network_running = false;
 	closesocket(connectSocket);
 	WSACleanup();
@@ -468,6 +498,10 @@ void receiveMessages()
                 std::string chatText = msg.substr(4);
 				// add to public chat history
                 mainChatHistory.push_back(chatText);
+				if (publicSound && audioSystem)
+				{
+					audioSystem->playSound(publicSound, nullptr, false, nullptr);
+				}
             }
 			// private chat message
             else if (msg.rfind("[Private]", 0) == 0)
@@ -484,6 +518,11 @@ void receiveMessages()
                     {
 						// save the message to the user's private chat history
                         it->second.private_chatHistory.push_back(it->second.nickname +":"+privateMsg);
+                        if (privateSound && audioSystem)
+                        {
+                            audioSystem->playSound(privateSound, nullptr, false, nullptr);
+                        }
+						it->second.isUnread = true;
                     }
                     else
                     {
@@ -677,4 +716,46 @@ void saveUUID()
 		    idFile.close();
 	    }
     }
+}
+
+bool initAudio()
+{
+	FMOD_RESULT res = FMOD::System_Create(&audioSystem);
+    if (res != FMOD_OK) {
+		std::cerr << "FMOD error!" << res<< std::endl;	
+        return false;
+    }
+	res = audioSystem->init(32, FMOD_INIT_NORMAL, 0);	
+    if (res != FMOD_OK) {
+        std::cerr << "FMOD error!" << res << std::endl;
+		return false;
+    }
+	res = audioSystem->createSound("public.mp3", FMOD_DEFAULT, nullptr, &publicSound);	
+    if (res != FMOD_OK) {
+        std::cerr << "Load public.mp3 failed" << std::endl;
+        return false;
+    }
+	res = audioSystem->createSound("private.mp3", FMOD_DEFAULT, nullptr, &privateSound);
+    if (res != FMOD_OK) {
+        std::cerr << "Load private.mp3 failed" << std::endl;
+        return false;
+    }
+	return true;
+}
+
+void cleanUpAudio()
+{
+	if (publicSound) {
+		publicSound->release();
+		publicSound = nullptr;
+	}
+	if (privateSound) {
+		privateSound->release();
+		privateSound = nullptr;
+	}
+	if (audioSystem) {
+		audioSystem->close();
+		audioSystem->release();
+		audioSystem = nullptr;
+	}
 }
