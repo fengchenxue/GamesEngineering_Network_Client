@@ -266,7 +266,7 @@ int main()
 				{
 					displayName += " (New)";
 				}
-				if (ImGui::Selectable(user.second.nickname.c_str()))
+				if (ImGui::Selectable(displayName.c_str()))
 				{
 					user.second.private_isOpen = true;
 					user.second.isUnread = false;
