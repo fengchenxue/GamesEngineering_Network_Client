@@ -36,7 +36,8 @@ LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
 // --------network data------------
 #define PORT "54000"
-#define IP "127.0.0.1"
+//#define IP "127.0.0.1"
+#define IP "47.93.62.111"
 #define MAX_BUFFER_SIZE 1024
 
 static SOCKET connectSocket = INVALID_SOCKET;
@@ -61,9 +62,8 @@ struct userInfo {
 static std::unordered_map<std::string, userInfo>Users;
 
 //-----functions for network-----
-//A thread runs this function to receive messages
 void receiveMessages();
-void startReceiveThread();
+void heartbeat();
 std::string GenerateUUID();
 void loadOrCreateUUID();
 void saveUUID();
@@ -122,12 +122,15 @@ int main()
 
 	//(6)send ID to server
     {
-        std::string handshakeMsg = "ID:" + myID + "\n";
+        std::string handshakeMsg = "ID:" + myID + "\n" + "NICK:" + myNickname + "\n";
 		send(connectSocket, handshakeMsg.c_str(), handshakeMsg.size(), 0);
     }
 
-	//(7)start a thread to receive messages
-	startReceiveThread();
+	//(7)start threads to receive messages and send heartbeat
+	std::thread reth(receiveMessages);
+	reth.detach();
+	std::thread hbth(heartbeat);
+    hbth.detach();
 
 	//(8) Initialize Direct3D and win32
     // Create application window
@@ -213,7 +216,7 @@ int main()
 
 			if (ImGui::Button("Update Nickname"))
 			{
-				std::string sendMsg = "NICK:" + tempNickname + "\n";
+				std::string sendMsg = "NICK:" + tempNickname;
 				send(connectSocket, sendMsg.c_str(), sendMsg.size(), 0);
 				//save the nickname
                 myNickname = tempNickname;
@@ -247,7 +250,6 @@ int main()
 			ImGui::SameLine();
 
 			//------main chat on the right-------
-
 			ImGui::BeginChild("public Chat",ImVec2(0,0),true, ImGuiWindowFlags_NoScrollbar);
             {
                 float msgHeight = ImGui::GetWindowHeight() - inputAreaHeight-30;
@@ -274,9 +276,9 @@ int main()
                     if (ImGui::Button("Send")) {
                         if (!mainChainInput.empty())
                         {
-                            std::string msg = myNickname + ": " + mainChainInput + "\n";
-                            send(connectSocket, msg.c_str(), msg.size(), 0);
-                            mainChatHistory.push_back(msg);
+                            std::string publicMsg = "MSG:" + mainChainInput;
+                            send(connectSocket, publicMsg.c_str(), publicMsg.size(), 0);
+                            mainChatHistory.push_back(myNickname + ":" + mainChainInput);
                             mainChainInput.clear();
                         }
                     }
@@ -294,12 +296,20 @@ int main()
 			if (user.second.private_isOpen)
 			{
 				std::string title = "Private Chat with " + user.second.nickname;
-				//chat history
+                ImGui::SetNextWindowSizeConstraints(ImVec2(400, 300), ImVec2(FLT_MAX, FLT_MAX));
+                //chat history
                 ImGui::Begin(title.c_str(),&user.second.private_isOpen);
-                for (auto& msg : user.second.private_chatHistory)
+				ImGui::BeginChild("Private Chat Messages", ImVec2(0, 220), true, ImGuiWindowFlags_HorizontalScrollbar | ImGuiWindowFlags_AlwaysVerticalScrollbar);
                 {
-                    ImGui::TextWrapped(msg.c_str());
+                    for (auto& msg : user.second.private_chatHistory)
+                    {
+                        ImGui::TextWrapped(msg.c_str());
+                    }
+                    if (ImGui::GetScrollY() >= ImGui::GetScrollMaxY() - 5) {
+                        ImGui::SetScrollHereY(1.0f);
+                    }
                 }
+				ImGui::EndChild();
 				ImGui::Separator();
 				
                 //input box
@@ -313,9 +323,9 @@ int main()
 				{
 					if (!user.second.private_inputBuffer.empty())
 					{
-						std::string msg = myNickname + ": " + user.second.private_inputBuffer + "\n";
-						send(connectSocket, msg.c_str(), msg.size(), 0);
-						user.second.private_chatHistory.push_back(msg);
+                        std::string privateMsg = "PRIV:" + user.first + "|" + user.second.private_inputBuffer;
+                        send(connectSocket, privateMsg.c_str(), privateMsg.size(), 0);
+						user.second.private_chatHistory.push_back(myNickname+":"+ user.second.private_inputBuffer);
 						user.second.private_inputBuffer.clear();
 					}
 				}
@@ -443,18 +453,134 @@ LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 
 void receiveMessages()
 {
-	char recvbuf[MAX_BUFFER_SIZE];
+    char recvbuf[MAX_BUFFER_SIZE];
     while (network_running)
     {
         int iResult = recv(connectSocket, recvbuf, MAX_BUFFER_SIZE, 0);
         if (iResult > 0)
         {
             recvbuf[iResult] = '\0';
-        
+            std::string msg(recvbuf);
+			std::cout << "Received: " << msg << std::endl;
+            // public chat message
+            if (msg.rfind("MSG:", 0) == 0)
+            {
+                std::string chatText = msg.substr(4);
+				// add to public chat history
+                mainChatHistory.push_back(chatText);
+            }
+			// private chat message
+            else if (msg.rfind("[Private]", 0) == 0)
+            {
+				// private chat message
+                std::string content = msg.substr(9);
+                size_t colonPos = content.find(':');
+                if (colonPos != std::string::npos)
+                {
+                    std::string senderID = content.substr(0, colonPos);   
+                    std::string privateMsg = content.substr(colonPos + 1);      
+                    auto it = Users.find(senderID);
+                    if (it != Users.end())
+                    {
+						// save the message to the user's private chat history
+                        it->second.private_chatHistory.push_back(it->second.nickname +":"+privateMsg);
+                    }
+                    else
+                    {
+						// create a new user
+                        userInfo newUser;
+                        newUser.nickname = "Unknown(" + senderID + ")";
+                        newUser.private_chatHistory.push_back(newUser.nickname + ":" + privateMsg);
+                        Users.insert({ senderID, newUser });
+                    }
+                }
+			}
+			// user joined message
+            else if (msg.rfind("USERJOIN:", 0) == 0)
+            {
+                std::string content = msg.substr(9);
+                size_t colonPos = content.find(':');
+                if (colonPos != std::string::npos)
+                {
+                    std::string uid = content.substr(0, colonPos);
+                    std::string nick = content.substr(colonPos + 1);
+
+                    userInfo& u = Users[uid];
+                    u.nickname = nick;
+                    u.isOnline = true;
+
+                    mainChatHistory.push_back("[System] User joined: " + nick);
+                }
+            }
+			//user left message
+            else if (msg.rfind("USERLEFT:", 0) == 0)
+            {
+                std::string leavingID = msg.substr(9);
+                auto it = Users.find(leavingID);
+                if (it != Users.end())
+                {
+                    mainChatHistory.push_back("[System] User left: " + it->second.nickname);
+                    it->second.isOnline = false;
+                }
+                else
+                {
+                    mainChatHistory.push_back("[System] Unknown user left: " + leavingID);
+                }
+            }
+			// nickname change message
+            else if (msg.rfind("NICKCHANGE:", 0) == 0)
+            {
+                std::string content = msg.substr(11);
+                size_t colonPos = content.find(':');
+                if (colonPos != std::string::npos)
+                {
+                    std::string uid = content.substr(0, colonPos);
+                    std::string newNick = content.substr(colonPos + 1);
+
+                    auto it = Users.find(uid);
+                    if (it != Users.end())
+                    {
+                        std::string oldName = it->second.nickname;
+                        it->second.nickname = newNick;
+                        mainChatHistory.push_back("[System] " + oldName + " changed nickname to " + newNick);
+                    }
+                }
+            }
+			// user list message
+            else if (msg.rfind("USERS:", 0) == 0)
+            {
+                std::string content = msg.substr(6);
+                size_t startPos = 0;
+                while (true)
+                {
+                    size_t endPos = content.find('\n', startPos);
+                    if (endPos == std::string::npos) endPos = content.size();
+
+                    std::string line = content.substr(startPos, endPos - startPos);
+                    if (!line.empty()) {
+                        size_t cpos = line.find(':');
+                        if (cpos != std::string::npos) {
+                            std::string uid = line.substr(0, cpos);
+                            std::string nick = line.substr(cpos + 1);
+                            
+                            userInfo& u = Users[uid];
+                            u.nickname = nick;
+                            u.isOnline = true;
+                        }
+                    }
+                    if (endPos == content.size()) break;
+                    startPos = endPos + 1;
+                }
+            }
+
+            else
+            {
+                std::cout << "Unknown msg: " << msg << std::endl;
+            }
         }
         else if (iResult == 0)
         {
-            std::cout << "Connection closed\n";
+            std::cout << "Connection closed by server\n";
             network_running = false;
         }
         else
@@ -465,10 +591,14 @@ void receiveMessages()
     }
 }
 
-void startReceiveThread()
+void heartbeat()
 {
-	std::thread th(receiveMessages);
-	th.detach();
+    std::string pingMsg = "PING";
+	while (network_running)
+	{
+		std::this_thread::sleep_for(std::chrono::seconds(30));
+		send(connectSocket, pingMsg.c_str(), pingMsg.size(), 0);
+	}
 }
 
 std::string GenerateUUID()
